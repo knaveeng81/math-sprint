@@ -7,7 +7,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # --- 1. GLOBAL CONFIGURATION ---
-NUM_PROBLEMS = 10
+NUM_PROBLEMS = 2
 SHEET_NAME = "Math Sprint Progress"
 
 st.set_page_config(page_title="Math Sprint Mastery", layout="wide")
