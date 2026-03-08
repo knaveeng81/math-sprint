@@ -1,0 +1,126 @@
+import streamlit as st
+import time
+import random
+import json
+import os
+import pandas as pd
+
+# --- CONFIGURATION & PERSISTENCE ---
+SAVE_FILE = "math_progress.json"
+
+def load_progress():
+    if os.path.exists(SAVE_FILE):
+        with open(SAVE_FILE, "r") as f:
+            return json.load(f)
+    return {"max_level": 1, "history": []}
+
+def save_progress(max_level, history):
+    with open(SAVE_FILE, "w") as f:
+        json.dump({"max_level": max_level, "history": history}, f)
+
+# --- APP SETUP ---
+st.set_page_config(page_title="Math Sprint: Level 2", page_icon="🔢")
+
+if 'data' not in st.session_state:
+    st.session_state.data = load_progress()
+if 'start_time' not in st.session_state:
+    st.session_state.start_time = None
+if 'count' not in st.session_state:
+    st.session_state.count = 0
+if 'current_q' not in st.session_state:
+    st.session_state.current_q = None
+
+# --- LEVEL DEFINITIONS ---
+LEVELS = {
+    1: {"name": "2.1: Double + Single (No Carry)", "target": 45},
+    2: {"name": "2.2: Double + Single (WITH Carry)", "target": 60},
+    3: {"name": "2.3: Double + Double (No Carry)", "target": 60},
+    4: {"name": "2.4: Double + Double (WITH Carry)", "target": 90},
+}
+
+# --- LOGIC: QUESTION GENERATOR ---
+def get_question(lvl):
+    if lvl == 1: # Double + Single (No Carry)
+        a = random.randint(10, 80)
+        b = random.randint(1, 9 - (a % 10))
+    elif lvl == 2: # Double + Single (With Carry)
+        a = random.randint(11, 89)
+        b = random.randint(10 - (a % 10), 9)
+    elif lvl == 3: # Double + Double (No Carry)
+        a_tens, a_ones = random.randint(1, 7), random.randint(1, 4)
+        b_tens, b_ones = random.randint(1, 9 - a_tens), random.randint(1, 9 - a_ones)
+        a, b = (a_tens * 10 + a_ones), (b_tens * 10 + b_ones)
+    else: # Double + Double (With Carry)
+        a = random.randint(15, 75)
+        b = random.randint(15, 75)
+    return a, b
+
+# --- UI: VERTICAL LAYOUT ---
+def draw_math_problem(a, b):
+    # CSS for the Carry Box and alignment
+    st.markdown(f"""
+    <div style="font-family: 'Courier New', monospace; font-size: 45px; width: 150px; text-align: right; border: 2px solid #ddd; padding: 10px; border-radius: 10px; background: #f9f9f9;">
+        <div style="color: #aaa; font-size: 20px; margin-bottom: -10px;">[ &nbsp; ]</div>
+        <div>{a}</div>
+        <div style="border-bottom: 4px solid black;">+ {b}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# --- SIDEBAR: PROGRESS ---
+st.sidebar.title("🏆 Progress")
+st.sidebar.write(f"Level Max: {LEVELS[st.session_state.data['max_level']]['name']}")
+selected_lvl = st.sidebar.selectbox("Current Level", options=list(LEVELS.keys()), 
+                                   format_func=lambda x: LEVELS[x]["name"])
+
+if selected_lvl > st.session_state.data['max_level']:
+    st.error("🔒 Solve earlier levels to unlock this!")
+    st.stop()
+
+# --- MAIN GAME LOOP ---
+st.title("⚡ Math Sprint")
+
+if st.session_state.start_time is None:
+    if st.button("🚀 Start 10-Question Sprint"):
+        st.session_state.start_time = time.time()
+        st.session_state.count = 0
+        st.session_state.current_q = get_question(selected_lvl)
+        st.rerun()
+else:
+    a, b = st.session_state.current_q
+    draw_math_problem(a, b)
+    
+    # Carry Box (Visual only, answer depends on final input)
+    st.text_input("Carry Box", placeholder="Write '1' here if needed", key="visual_carry", label_visibility="collapsed")
+    
+    ans = st.number_input("Answer", value=None, step=1, key=f"q_{st.session_state.count}")
+    
+    if st.button("Next Question"):
+        if ans == (a + b):
+            st.session_state.count += 1
+            if st.session_state.count >= 10:
+                # FINISHED
+                end_time = time.time()
+                elapsed = round(end_time - st.session_state.start_time, 2)
+                st.session_state.data['history'].append({"Date": time.strftime("%m/%d"), "Time": elapsed})
+                
+                # Check for Level Up
+                if elapsed <= LEVELS[selected_lvl]["target"] and selected_lvl == st.session_state.data['max_level']:
+                    st.session_state.data['max_level'] += 1
+                
+                save_progress(st.session_state.data['max_level'], st.session_state.data['history'])
+                st.session_state.start_time = None
+                st.success(f"Done! Time: {elapsed}s")
+                st.balloons()
+                st.rerun()
+            else:
+                st.session_state.current_q = get_question(selected_lvl)
+                st.rerun()
+        else:
+            st.error("Try again! (Kumon Rule: Correct your mistakes)")
+
+# --- CHART ---
+if st.session_state.data['history']:
+    st.divider()
+    st.subheader("📊 Your Speed Chart")
+    hist_df = pd.DataFrame(st.session_state.data['history'])
+    st.line_chart(hist_df.set_index("Date"))
