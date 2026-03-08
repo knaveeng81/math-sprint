@@ -1,126 +1,236 @@
 import streamlit as st
 import time
 import random
-import json
-import os
 import pandas as pd
+from datetime import datetime
+import gspread
+from google.oauth2.service_account import Credentials
 
-# --- CONFIGURATION & PERSISTENCE ---
-SAVE_FILE = "math_progress.json"
+# --- 1. GLOBAL CONFIGURATION ---
+NUM_PROBLEMS = 10
+SHEET_NAME = "Math Sprint Progress"
 
-def load_progress():
-    if os.path.exists(SAVE_FILE):
-        with open(SAVE_FILE, "r") as f:
-            return json.load(f)
-    return {"max_level": 1, "history": []}
+st.set_page_config(page_title="Math Sprint Mastery", layout="wide")
 
-def save_progress(max_level, history):
-    with open(SAVE_FILE, "w") as f:
-        json.dump({"max_level": max_level, "history": history}, f)
+# --- 2. GOOGLE SHEETS CONNECTION ---
+@st.cache_resource
+def get_gsheet():
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive"
+    ]
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=scopes
+    )
+    client = gspread.authorize(creds)
+    return client
 
-# --- APP SETUP ---
-st.set_page_config(page_title="Math Sprint: Level 2", page_icon="🔢")
+def get_or_create_worksheet(client, spreadsheet_id):
+    sh = client.open_by_key(spreadsheet_id)
+    try:
+        ws = sh.worksheet("Progress")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title="Progress", rows=1000, cols=5)
+        ws.append_row(["Timestamp", "Student", "Mode", "Time_Seconds", "Score"])
+    return ws
 
-if 'data' not in st.session_state:
-    st.session_state.data = load_progress()
-if 'start_time' not in st.session_state:
-    st.session_state.start_time = None
-if 'count' not in st.session_state:
-    st.session_state.count = 0
-if 'current_q' not in st.session_state:
-    st.session_state.current_q = None
+def log_result(student_name, mode, elapsed, score):
+    try:
+        client = get_gsheet()
+        spreadsheet_id = st.secrets["spreadsheet_id"]
+        ws = get_or_create_worksheet(client, spreadsheet_id)
+        ws.append_row([
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            student_name,
+            mode,
+            elapsed,
+            score
+        ])
+        return True
+    except Exception as e:
+        st.warning(f"Could not save to Google Sheets: {e}")
+        return False
 
-# --- LEVEL DEFINITIONS ---
-LEVELS = {
-    1: {"name": "2.1: Double + Single (No Carry)", "target": 45},
-    2: {"name": "2.2: Double + Single (WITH Carry)", "target": 60},
-    3: {"name": "2.3: Double + Double (No Carry)", "target": 60},
-    4: {"name": "2.4: Double + Double (WITH Carry)", "target": 90},
-}
+@st.cache_data(ttl=30)
+def load_leaderboard(spreadsheet_id):
+    try:
+        client = get_gsheet()
+        ws = get_or_create_worksheet(client, spreadsheet_id)
+        data = ws.get_all_records()
+        if not data:
+            return pd.DataFrame()
+        df = pd.DataFrame(data)
+        df["Time_Seconds"] = pd.to_numeric(df["Time_Seconds"], errors="coerce")
+        return df
+    except Exception:
+        return pd.DataFrame()
 
-# --- LOGIC: QUESTION GENERATOR ---
-def get_question(lvl):
-    if lvl == 1: # Double + Single (No Carry)
-        a = random.randint(10, 80)
-        b = random.randint(1, 9 - (a % 10))
-    elif lvl == 2: # Double + Single (With Carry)
-        a = random.randint(11, 89)
-        b = random.randint(10 - (a % 10), 9)
-    elif lvl == 3: # Double + Double (No Carry)
-        a_tens, a_ones = random.randint(1, 7), random.randint(1, 4)
-        b_tens, b_ones = random.randint(1, 9 - a_tens), random.randint(1, 9 - a_ones)
-        a, b = (a_tens * 10 + a_ones), (b_tens * 10 + b_ones)
-    else: # Double + Double (With Carry)
-        a = random.randint(15, 75)
-        b = random.randint(15, 75)
-    return a, b
+# --- 3. PROBLEM GENERATORS ---
+def generate_problems(mode, count):
+    problems = []
+    for i in range(count):
+        current_mode = mode
+        if mode == "Mixed Review":
+            current_mode = random.choice(["Addition (Vertical)", "Subtraction (Borrowing)", "Multiplication (Tables)"])
 
-# --- UI: VERTICAL LAYOUT ---
-def draw_math_problem(a, b):
-    # CSS for the Carry Box and alignment
-    st.markdown(f"""
-    <div style="font-family: 'Courier New', monospace; font-size: 45px; width: 150px; text-align: right; border: 2px solid #ddd; padding: 10px; border-radius: 10px; background: #f9f9f9;">
-        <div style="color: #aaa; font-size: 20px; margin-bottom: -10px;">[ &nbsp; ]</div>
-        <div>{a}</div>
-        <div style="border-bottom: 4px solid black;">+ {b}</div>
-    </div>
-    """, unsafe_allow_html=True)
+        if current_mode == "Addition (Vertical)":
+            a, b = random.randint(11, 99), random.randint(11, 99)
+            problems.append({"a": a, "b": b, "ans": a + b, "op": "+", "style": "vertical", "mode": "Addition"})
 
-# --- SIDEBAR: PROGRESS ---
-st.sidebar.title("🏆 Progress")
-st.sidebar.write(f"Level Max: {LEVELS[st.session_state.data['max_level']]['name']}")
-selected_lvl = st.sidebar.selectbox("Current Level", options=list(LEVELS.keys()), 
-                                   format_func=lambda x: LEVELS[x]["name"])
+        elif current_mode == "Subtraction (Borrowing)":
+            a = random.randint(51, 99)
+            a_units = a % 10
+            b_units = random.randint(a_units + 1, 9) if a_units < 9 else 9
+            b_tens = random.randint(1, (a // 10) - 1)
+            b = (b_tens * 10) + b_units
+            problems.append({"a": a, "b": b, "ans": a - b, "op": "-", "style": "vertical", "mode": "Subtraction"})
 
-if selected_lvl > st.session_state.data['max_level']:
-    st.error("🔒 Solve earlier levels to unlock this!")
-    st.stop()
+        elif current_mode == "Multiplication (Tables)":
+            a, b = random.randint(2, 12), random.randint(2, 12)
+            problems.append({"a": a, "b": b, "ans": a * b, "op": "×", "style": "horizontal", "mode": "Multiplication"})
 
-# --- MAIN GAME LOOP ---
-st.title("⚡ Math Sprint")
-
-if st.session_state.start_time is None:
-    if st.button("🚀 Start 10-Question Sprint"):
-        st.session_state.start_time = time.time()
-        st.session_state.count = 0
-        st.session_state.current_q = get_question(selected_lvl)
-        st.rerun()
-else:
-    a, b = st.session_state.current_q
-    draw_math_problem(a, b)
-    
-    # Carry Box (Visual only, answer depends on final input)
-    st.text_input("Carry Box", placeholder="Write '1' here if needed", key="visual_carry", label_visibility="collapsed")
-    
-    ans = st.number_input("Answer", value=None, step=1, key=f"q_{st.session_state.count}")
-    
-    if st.button("Next Question"):
-        if ans == (a + b):
-            st.session_state.count += 1
-            if st.session_state.count >= 10:
-                # FINISHED
-                end_time = time.time()
-                elapsed = round(end_time - st.session_state.start_time, 2)
-                st.session_state.data['history'].append({"Date": time.strftime("%m/%d"), "Time": elapsed})
-                
-                # Check for Level Up
-                if elapsed <= LEVELS[selected_lvl]["target"] and selected_lvl == st.session_state.data['max_level']:
-                    st.session_state.data['max_level'] += 1
-                
-                save_progress(st.session_state.data['max_level'], st.session_state.data['history'])
-                st.session_state.start_time = None
-                st.success(f"Done! Time: {elapsed}s")
-                st.balloons()
-                st.rerun()
-            else:
-                st.session_state.current_q = get_question(selected_lvl)
-                st.rerun()
         else:
-            st.error("Try again! (Kumon Rule: Correct your mistakes)")
+            a, b = random.randint(10, 50), random.randint(10, 50)
+            problems.append({"a": a, "b": b, "ans": a + b, "op": "+", "style": "horizontal", "mode": "Simple"})
+    return problems
 
-# --- CHART ---
-if st.session_state.data['history']:
+# --- 4. SESSION STATE ---
+for key, default in [
+    ("problems", None),
+    ("start_time", None),
+    ("sprint_id", 0),
+    ("last_result", None),
+]:
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+# --- 5. SIDEBAR SETTINGS ---
+with st.sidebar:
+    st.header("⚙️ Practice Settings")
+
+    student_name = st.text_input("👤 Your Name", placeholder="Enter your name...")
+
+    practice_mode = st.selectbox("Choose Problem Type:",
+                        ["Addition (Vertical)", "Subtraction (Borrowing)", "Multiplication (Tables)", "Mixed Review"])
+
+    start_disabled = not student_name.strip()
+    if st.button("🏁 START NEW SPRINT", disabled=start_disabled):
+        st.session_state.problems = generate_problems(practice_mode, NUM_PROBLEMS)
+        st.session_state.start_time = time.time()
+        st.session_state.sprint_id += 1
+        st.session_state.last_result = None
+        st.rerun()
+
+    if start_disabled:
+        st.caption("⬆️ Enter your name to start!")
+
     st.divider()
-    st.subheader("📊 Your Speed Chart")
-    hist_df = pd.DataFrame(st.session_state.data['history'])
-    st.line_chart(hist_df.set_index("Date"))
+
+    # --- LEADERBOARD IN SIDEBAR ---
+    st.subheader("🏆 Leaderboard")
+    try:
+        spreadsheet_id = st.secrets["spreadsheet_id"]
+        lb_df = load_leaderboard(spreadsheet_id)
+        if not lb_df.empty and "Student" in lb_df.columns:
+            # Best time per student for the selected mode
+            mode_label = practice_mode.split(" (")[0] if "(" in practice_mode else practice_mode
+            filtered = lb_df[lb_df["Score"] == NUM_PROBLEMS]
+            if not filtered.empty:
+                best = (
+                    filtered[filtered["Mode"].str.contains(mode_label, na=False)]
+                    .groupby("Student")["Time_Seconds"]
+                    .min()
+                    .sort_values()
+                    .reset_index()
+                    .head(10)
+                )
+                best.columns = ["Student", "Best Time (s)"]
+                best.index = best.index + 1
+                st.dataframe(best, use_container_width=True)
+            else:
+                st.caption("No perfect scores yet — be the first! 🌟")
+        else:
+            st.caption("No data yet.")
+    except Exception:
+        st.caption("Connect Google Sheets to see leaderboard.")
+
+# --- 6. MAIN WORKSHEET UI ---
+st.title(f"⚡ {practice_mode} Sprint")
+
+if st.session_state.last_result:
+    r = st.session_state.last_result
+    if r["perfect"]:
+        st.success(f"🏆 PERFECT SCORE, {r['name']}! Time: {r['elapsed']}s — saved to leaderboard!")
+    else:
+        st.error(f"❌ Score: {r['score']}/{NUM_PROBLEMS}. Finish all correctly to save your time!")
+
+if st.session_state.problems:
+    with st.form(f"worksheet_{st.session_state.sprint_id}"):
+        cols = st.columns(5)
+        user_answers = []
+
+        for i, prob in enumerate(st.session_state.problems):
+            with cols[i % 5]:
+                st.markdown(f"**Q{i+1}**")
+
+                if prob["style"] == "vertical":
+                    st.markdown(f"""
+                    <div style="font-family: monospace; font-size: 32px; text-align: right;
+                                border: 2px solid #f0f2f6; padding: 15px; border-radius: 10px;
+                                background-color: white; margin-bottom: 10px; color: #1f1f1f;">
+                        <div style="color: #ccc; font-size: 16px; text-align: left; margin-bottom: -15px;">[ ]</div>
+                        {prob['a']}<br>
+                        <span style="border-bottom: 3px solid #1f1f1f; display: block;">{prob['op']} {prob['b']}</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    st.markdown(f"<h2 style='text-align: center;'>{prob['a']} {prob['op']} {prob['b']} = </h2>", unsafe_allow_html=True)
+
+                ans = st.number_input(f"Ans_{i}", label_visibility="collapsed", step=1, value=None,
+                                      key=f"input_{st.session_state.sprint_id}_{i}")
+                user_answers.append(ans)
+                st.write("---")
+
+        submit = st.form_submit_button(f"🚀 SUBMIT {NUM_PROBLEMS} ANSWERS", use_container_width=True)
+
+    # --- 7. SCORING & GOOGLE SHEETS SAVE ---
+    if submit:
+        elapsed = round(time.time() - st.session_state.start_time, 2)
+        correct_count = sum(1 for i, p in enumerate(st.session_state.problems) if user_answers[i] == p["ans"])
+        is_perfect = correct_count == NUM_PROBLEMS
+        name = student_name.strip() or "Anonymous"
+
+        if is_perfect:
+            st.balloons()
+            log_result(name, practice_mode, elapsed, correct_count)
+            load_leaderboard.clear()  # Bust cache so leaderboard refreshes
+
+        st.session_state.last_result = {
+            "perfect": is_perfect,
+            "name": name,
+            "elapsed": elapsed,
+            "score": correct_count,
+        }
+        st.rerun()
+
+else:
+    st.info("👈 Enter your name and press **START NEW SPRINT** to begin!")
+
+# --- 8. PROGRESS CHART ---
+try:
+    spreadsheet_id = st.secrets["spreadsheet_id"]
+    history = load_leaderboard(spreadsheet_id)
+    name = student_name.strip() if student_name.strip() else None
+    if not history.empty and name:
+        student_history = history[
+            (history["Student"] == name) &
+            (history["Mode"] == practice_mode) &
+            (history["Score"] == NUM_PROBLEMS)
+        ]
+        if not student_history.empty:
+            st.divider()
+            st.subheader(f"📈 Your {practice_mode} Progress, {name}")
+            st.line_chart(student_history.set_index("Timestamp")["Time_Seconds"])
+except Exception:
+    pass
