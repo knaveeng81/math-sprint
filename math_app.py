@@ -325,8 +325,8 @@ if st.session_state.last_result:
     else:
         st.error(f"❌ Score: {r['score']}/{NUM_PROBLEMS}. Review the red boxes and try again!")
 
-if st.session_state.problems:
-    display_live_timer(st.session_state.start_time)
+#if st.session_state.problems:
+#    display_live_timer(st.session_state.start_time)
 
     with st.form(f"worksheet_{st.session_state.sprint_id}"):
         cols = st.columns(2) 
