@@ -6,7 +6,7 @@ from datetime import datetime
 from supabase import create_client, Client
 
 # --- 1. GLOBAL CONFIGURATION ---
-NUM_PROBLEMS = 2
+NUM_PROBLEMS = 10
 
 st.set_page_config(page_title="Math Sprint Mastery", layout="wide")
 
